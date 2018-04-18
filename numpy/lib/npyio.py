@@ -758,7 +758,7 @@ def _getconv(dtype):
     elif issubclass(typ, np.floating):
         return floatconv
     elif issubclass(typ, complex):
-        return lambda x: complex(asstr(x))
+        return lambda x: complex(asstr(x).replace('+-', '-'))
     elif issubclass(typ, np.bytes_):
         return asbytes
     elif issubclass(typ, np.unicode_):
@@ -1377,7 +1377,8 @@ def savetxt(fname, X, fmt='%.18e', delimiter=' ', newline='\n', header='',
                 for number in row:
                     row2.append(number.real)
                     row2.append(number.imag)
-                fh.write(format % tuple(row2) + newline)
+                s = format % tuple(row2) + newline
+                fh.write(s.replace('+-', '-'))
         else:
             for row in X:
                 try:
@@ -1719,7 +1720,7 @@ def genfromtxt(fname, dtype=float, comments='#', delimiter=None,
     try:
         while not first_values:
             first_line = _decode_line(next(fhd), encoding)
-            if names is True:
+            if (names is True) and (comments is not None):
                 if comments in first_line:
                     first_line = (
                         ''.join(first_line.split(comments)[1:]))
@@ -1733,8 +1734,9 @@ def genfromtxt(fname, dtype=float, comments='#', delimiter=None,
     # Should we take the first values as names ?
     if names is True:
         fval = first_values[0].strip()
-        if fval in comments:
-            del first_values[0]
+        if comments is not None:
+            if fval in comments:
+                del first_values[0]
 
     # Check the columns to use: make sure `usecols` is a list
     if usecols is not None:
