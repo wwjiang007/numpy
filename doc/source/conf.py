@@ -115,7 +115,7 @@ else:
         "scipy_org_logo": False,
         "rootlinks": []
     }
-    html_sidebars = {'index': 'indexsidebar.html'}
+    html_sidebars = {'index': ['indexsidebar.html', 'searchbox.html']}
 
 html_additional_pages = {
     'index': 'indexcontent.html',
@@ -215,7 +215,7 @@ texinfo_documents = [
 intersphinx_mapping = {
     'python': ('https://docs.python.org/dev', None),
     'scipy': ('https://docs.scipy.org/doc/scipy/reference', None),
-    'matplotlib': ('http://matplotlib.org', None)
+    'matplotlib': ('https://matplotlib.org', None)
 }
 
 

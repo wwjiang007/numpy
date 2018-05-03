@@ -859,18 +859,18 @@ def loadtxt(fname, dtype=float, comments='#', delimiter=None,
     Examples
     --------
     >>> from io import StringIO   # StringIO behaves like a file object
-    >>> c = StringIO("0 1\\n2 3")
+    >>> c = StringIO(u"0 1\\n2 3")
     >>> np.loadtxt(c)
     array([[ 0.,  1.],
            [ 2.,  3.]])
 
-    >>> d = StringIO("M 21 72\\nF 35 58")
+    >>> d = StringIO(u"M 21 72\\nF 35 58")
     >>> np.loadtxt(d, dtype={'names': ('gender', 'age', 'weight'),
     ...                      'formats': ('S1', 'i4', 'f4')})
     array([('M', 21, 72.0), ('F', 35, 58.0)],
           dtype=[('gender', '|S1'), ('age', '<i4'), ('weight', '<f4')])
 
-    >>> c = StringIO("1,0,2\\n3,0,4")
+    >>> c = StringIO(u"1,0,2\\n3,0,4")
     >>> x, y = np.loadtxt(c, delimiter=',', usecols=(0, 2), unpack=True)
     >>> x
     array([ 1.,  3.])
@@ -936,7 +936,7 @@ def loadtxt(fname, dtype=float, comments='#', delimiter=None,
     if encoding is not None:
         fencoding = encoding
     # we must assume local encoding
-    # TOOD emit portability warning?
+    # TODO emit portability warning?
     elif fencoding is None:
         import locale
         fencoding = locale.getpreferredencoding()
@@ -1166,13 +1166,14 @@ def savetxt(fname, X, fmt='%.18e', delimiter=' ', newline='\n', header='',
         multi-format string, e.g. 'Iteration %d -- %10.5f', in which
         case `delimiter` is ignored. For complex `X`, the legal options
         for `fmt` are:
-            a) a single specifier, `fmt='%.4e'`, resulting in numbers formatted
-               like `' (%s+%sj)' % (fmt, fmt)`
-            b) a full string specifying every real and imaginary part, e.g.
-               `' %.4e %+.4ej %.4e %+.4ej %.4e %+.4ej'` for 3 columns
-            c) a list of specifiers, one per column - in this case, the real
-               and imaginary part must have separate specifiers,
-               e.g. `['%.3e + %.3ej', '(%.15e%+.15ej)']` for 2 columns
+
+        * a single specifier, `fmt='%.4e'`, resulting in numbers formatted
+          like `' (%s+%sj)' % (fmt, fmt)`
+        * a full string specifying every real and imaginary part, e.g.
+          `' %.4e %+.4ej %.4e %+.4ej %.4e %+.4ej'` for 3 columns
+        * a list of specifiers, one per column - in this case, the real
+          and imaginary part must have separate specifiers,
+          e.g. `['%.3e + %.3ej', '(%.15e%+.15ej)']` for 2 columns
     delimiter : str, optional
         String or character separating columns.
     newline : str, optional
@@ -1631,7 +1632,7 @@ def genfromtxt(fname, dtype=float, comments='#', delimiter=None,
 
     Comma delimited file with mixed dtype
 
-    >>> s = StringIO("1,1.3,abcde")
+    >>> s = StringIO(u"1,1.3,abcde")
     >>> data = np.genfromtxt(s, dtype=[('myint','i8'),('myfloat','f8'),
     ... ('mystring','S5')], delimiter=",")
     >>> data
@@ -1658,7 +1659,7 @@ def genfromtxt(fname, dtype=float, comments='#', delimiter=None,
 
     An example with fixed-width columns
 
-    >>> s = StringIO("11.3abcde")
+    >>> s = StringIO(u"11.3abcde")
     >>> data = np.genfromtxt(s, dtype=None, names=['intvar','fltvar','strvar'],
     ...     delimiter=[1,3,5])
     >>> data
