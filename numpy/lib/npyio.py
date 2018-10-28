@@ -1,6 +1,5 @@
 from __future__ import division, absolute_import, print_function
 
-import io
 import sys
 import os
 import re
@@ -13,6 +12,8 @@ import numpy as np
 from . import format
 from ._datasource import DataSource
 from numpy.core.multiarray import packbits, unpackbits
+from numpy.core.overrides import array_function_dispatch
+from numpy.core._internal import recursive
 from ._iotools import (
     LineSplitter, NameValidator, StringConverter, ConverterError,
     ConverterLockError, ConversionWarning, _is_string_like,
@@ -23,12 +24,13 @@ from numpy.compat import (
     asbytes, asstr, asunicode, asbytes_nested, bytes, basestring, unicode,
     is_pathlib_path
     )
+from numpy.core.numeric import pickle
 
 if sys.version_info[0] >= 3:
-    import pickle
+    from collections.abc import Mapping
 else:
-    import cPickle as pickle
     from future_builtins import map
+    from collections import Mapping
 
 
 def loads(*args, **kwargs):
@@ -92,7 +94,7 @@ class BagObj(object):
 
         This also enables tab-completion in an interpreter or IPython.
         """
-        return object.__getattribute__(self, '_obj').keys()
+        return list(object.__getattribute__(self, '_obj').keys())
 
 
 def zipfile_factory(file, *args, **kwargs):
@@ -110,7 +112,7 @@ def zipfile_factory(file, *args, **kwargs):
     return zipfile.ZipFile(file, *args, **kwargs)
 
 
-class NpzFile(object):
+class NpzFile(Mapping):
     """
     NpzFile(fid)
 
@@ -216,6 +218,13 @@ class NpzFile(object):
     def __del__(self):
         self.close()
 
+    # Implement the Mapping ABC
+    def __iter__(self):
+        return iter(self.files)
+
+    def __len__(self):
+        return len(self.files)
+
     def __getitem__(self, key):
         # FIXME: This seems like it will copy strings around
         #   more than is strictly necessary.  The zipfile
@@ -225,11 +234,11 @@ class NpzFile(object):
         #   It would be better if the zipfile could read
         #   (or at least uncompress) the data
         #   directly into the array memory.
-        member = 0
+        member = False
         if key in self._files:
-            member = 1
+            member = True
         elif key in self.files:
-            member = 1
+            member = True
             key += '.npy'
         if member:
             bytes = self.zip.open(key)
@@ -245,31 +254,27 @@ class NpzFile(object):
         else:
             raise KeyError("%s is not a file in the archive" % key)
 
-    def __iter__(self):
-        return iter(self.files)
 
-    def items(self):
-        """
-        Return a list of tuples, with each tuple (filename, array in file).
+    if sys.version_info.major == 3:
+        # deprecate the python 2 dict apis that we supported by accident in
+        # python 3. We forgot to implement itervalues() at all in earlier
+        # versions of numpy, so no need to deprecated it here.
 
-        """
-        return [(f, self[f]) for f in self.files]
+        def iteritems(self):
+            # Numpy 1.15, 2018-02-20
+            warnings.warn(
+                "NpzFile.iteritems is deprecated in python 3, to match the "
+                "removal of dict.itertems. Use .items() instead.",
+                DeprecationWarning, stacklevel=2)
+            return self.items()
 
-    def iteritems(self):
-        """Generator that returns tuples (filename, array in file)."""
-        for f in self.files:
-            yield (f, self[f])
-
-    def keys(self):
-        """Return files in the archive with a ``.npy`` extension."""
-        return self.files
-
-    def iterkeys(self):
-        """Return an iterator over the files in the archive."""
-        return self.__iter__()
-
-    def __contains__(self, key):
-        return self.files.__contains__(key)
+        def iterkeys(self):
+            # Numpy 1.15, 2018-02-20
+            warnings.warn(
+                "NpzFile.iterkeys is deprecated in python 3, to match the "
+                "removal of dict.iterkeys. Use .keys() instead.",
+                DeprecationWarning, stacklevel=2)
+            return self.keys()
 
 
 def load(file, mmap_mode=None, allow_pickle=True, fix_imports=True,
@@ -374,16 +379,6 @@ def load(file, mmap_mode=None, allow_pickle=True, fix_imports=True,
     memmap([4, 5, 6])
 
     """
-    own_fid = False
-    if isinstance(file, basestring):
-        fid = open(file, "rb")
-        own_fid = True
-    elif is_pathlib_path(file):
-        fid = file.open("rb")
-        own_fid = True
-    else:
-        fid = file
-
     if encoding not in ('ASCII', 'latin1', 'bytes'):
         # The 'encoding' value for pickle also affects what encoding
         # the serialized binary data of NumPy arrays is loaded
@@ -404,21 +399,33 @@ def load(file, mmap_mode=None, allow_pickle=True, fix_imports=True,
         # Nothing to do on Python 2
         pickle_kwargs = {}
 
+    # TODO: Use contextlib.ExitStack once we drop Python 2
+    if isinstance(file, basestring):
+        fid = open(file, "rb")
+        own_fid = True
+    elif is_pathlib_path(file):
+        fid = file.open("rb")
+        own_fid = True
+    else:
+        fid = file
+        own_fid = False
+
     try:
         # Code to distinguish from NumPy binary files and pickles.
         _ZIP_PREFIX = b'PK\x03\x04'
+        _ZIP_SUFFIX = b'PK\x05\x06' # empty zip files start with this
         N = len(format.MAGIC_PREFIX)
         magic = fid.read(N)
         # If the file size is less than N, we need to make sure not
         # to seek past the beginning of the file
         fid.seek(-min(N, len(magic)), 1)  # back-up
-        if magic.startswith(_ZIP_PREFIX):
+        if magic.startswith(_ZIP_PREFIX) or magic.startswith(_ZIP_SUFFIX):
             # zip-file (assume .npz)
             # Transfer file ownership to NpzFile
-            tmp = own_fid
+            ret = NpzFile(fid, own_fid=own_fid, allow_pickle=allow_pickle,
+                          pickle_kwargs=pickle_kwargs)
             own_fid = False
-            return NpzFile(fid, own_fid=tmp, allow_pickle=allow_pickle,
-                           pickle_kwargs=pickle_kwargs)
+            return ret
         elif magic == format.MAGIC_PREFIX:
             # .npy file
             if mmap_mode:
@@ -441,6 +448,11 @@ def load(file, mmap_mode=None, allow_pickle=True, fix_imports=True,
             fid.close()
 
 
+def _save_dispatcher(file, arr, allow_pickle=None, fix_imports=None):
+    return (arr,)
+
+
+@array_function_dispatch(_save_dispatcher)
 def save(file, arr, allow_pickle=True, fix_imports=True):
     """
     Save an array to a binary file in NumPy ``.npy`` format.
@@ -475,9 +487,7 @@ def save(file, arr, allow_pickle=True, fix_imports=True):
 
     Notes
     -----
-    For a description of the ``.npy`` format, see the module docstring
-    of `numpy.lib.format` or the NumPy Enhancement Proposal
-    http://numpy.github.io/neps/npy-format.html
+    For a description of the ``.npy`` format, see :py:mod:`numpy.lib.format`.
 
     Examples
     --------
@@ -521,6 +531,14 @@ def save(file, arr, allow_pickle=True, fix_imports=True):
             fid.close()
 
 
+def _savez_dispatcher(file, *args, **kwds):
+    for a in args:
+        yield a
+    for v in kwds.values():
+        yield v
+
+
+@array_function_dispatch(_savez_dispatcher)
 def savez(file, *args, **kwds):
     """
     Save several arrays into a single file in uncompressed ``.npz`` format.
@@ -561,9 +579,7 @@ def savez(file, *args, **kwds):
     The ``.npz`` file format is a zipped archive of files named after the
     variables they contain.  The archive is not compressed and each file
     in the archive contains one variable in ``.npy`` format. For a
-    description of the ``.npy`` format, see `numpy.lib.format` or the
-    NumPy Enhancement Proposal
-    http://numpy.github.io/neps/npy-format.html
+    description of the ``.npy`` format, see :py:mod:`numpy.lib.format`.
 
     When opening the saved ``.npz`` file with `load` a `NpzFile` object is
     returned. This is a dictionary-like object which can be queried for
@@ -602,6 +618,14 @@ def savez(file, *args, **kwds):
     _savez(file, args, kwds, False)
 
 
+def _savez_compressed_dispatcher(file, *args, **kwds):
+    for a in args:
+        yield a
+    for v in kwds.values():
+        yield v
+
+
+@array_function_dispatch(_savez_compressed_dispatcher)
 def savez_compressed(file, *args, **kwds):
     """
     Save several arrays into a single file in compressed ``.npz`` format.
@@ -642,9 +666,9 @@ def savez_compressed(file, *args, **kwds):
     The ``.npz`` file format is a zipped archive of files named after the
     variables they contain.  The archive is compressed with
     ``zipfile.ZIP_DEFLATED`` and each file in the archive contains one variable
-    in ``.npy`` format. For a description of the ``.npy`` format, see
-    `numpy.lib.format` or the NumPy Enhancement Proposal
-    http://numpy.github.io/neps/npy-format.html
+    in ``.npy`` format. For a description of the ``.npy`` format, see 
+    :py:mod:`numpy.lib.format`.
+
 
     When opening the saved ``.npz`` file with `load` a `NpzFile` object is
     returned. This is a dictionary-like object which can be queried for
@@ -771,7 +795,7 @@ _loadtxt_chunksize = 50000
 
 def loadtxt(fname, dtype=float, comments='#', delimiter=None,
             converters=None, skiprows=0, usecols=None, unpack=False,
-            ndmin=0, encoding='bytes'):
+            ndmin=0, encoding='bytes', max_rows=None):
     """
     Load data from a text file.
 
@@ -791,8 +815,8 @@ def loadtxt(fname, dtype=float, comments='#', delimiter=None,
         the data-type.
     comments : str or sequence of str, optional
         The characters or list of characters used to indicate the start of a
-        comment. For backwards compatibility, byte strings will be decoded as
-        'latin1'. The default is '#'.
+        comment. None implies no comments. For backwards compatibility, byte
+        strings will be decoded as 'latin1'. The default is '#'.
     delimiter : str, optional
         The string used to separate values. For backwards compatibility, byte
         strings will be decoded as 'latin1'. The default is whitespace.
@@ -833,6 +857,11 @@ def loadtxt(fname, dtype=float, comments='#', delimiter=None,
         the system default is used. The default value is 'bytes'.
 
         .. versionadded:: 1.14.0
+    max_rows : int, optional
+        Read `max_rows` lines of content after `skiprows` lines. The default
+        is to read all the lines.
+
+        .. versionadded:: 1.16.0
 
     Returns
     -------
@@ -942,7 +971,8 @@ def loadtxt(fname, dtype=float, comments='#', delimiter=None,
         fencoding = locale.getpreferredencoding()
 
     # not to be confused with the flatten_dtype we import...
-    def flatten_dtype_internal(dt):
+    @recursive
+    def flatten_dtype_internal(self, dt):
         """Unpack a structured data-type, and produce re-packing info."""
         if dt.names is None:
             # If the dtype is flattened, return.
@@ -962,7 +992,7 @@ def loadtxt(fname, dtype=float, comments='#', delimiter=None,
             packing = []
             for field in dt.names:
                 tp, bytes = dt.fields[field]
-                flat_dt, flat_packing = flatten_dtype_internal(tp)
+                flat_dt, flat_packing = self(tp)
                 types.extend(flat_dt)
                 # Avoid extra nesting for subarrays
                 if tp.ndim > 0:
@@ -971,7 +1001,8 @@ def loadtxt(fname, dtype=float, comments='#', delimiter=None,
                     packing.append((len(flat_dt), flat_packing))
             return (types, packing)
 
-    def pack_items(items, packing):
+    @recursive
+    def pack_items(self, items, packing):
         """Pack items into nested lists based on re-packing info."""
         if packing is None:
             return items[0]
@@ -983,7 +1014,7 @@ def loadtxt(fname, dtype=float, comments='#', delimiter=None,
             start = 0
             ret = []
             for length, subpacking in packing:
-                ret.append(pack_items(items[start:start+length], subpacking))
+                ret.append(self(items[start:start+length], subpacking))
                 start += length
             return tuple(ret)
 
@@ -1012,7 +1043,9 @@ def loadtxt(fname, dtype=float, comments='#', delimiter=None,
 
         """
         X = []
-        for i, line in enumerate(itertools.chain([first_line], fh)):
+        line_iter = itertools.chain([first_line], fh)
+        line_iter = itertools.islice(line_iter, max_rows)
+        for i, line in enumerate(line_iter):
             vals = split_line(line)
             if len(vals) == 0:
                 continue
@@ -1109,11 +1142,6 @@ def loadtxt(fname, dtype=float, comments='#', delimiter=None,
     finally:
         if fown:
             fh.close()
-        # recursive closures have a cyclic reference to themselves, which
-        # requires gc to collect (gh-10620). To avoid this problem, for
-        # performance and PyPy friendliness, we break the cycle:
-        flatten_dtype_internal = None
-        pack_items = None
 
     if X is None:
         X = np.array([], dtype)
@@ -1148,6 +1176,13 @@ def loadtxt(fname, dtype=float, comments='#', delimiter=None,
         return X
 
 
+def _savetxt_dispatcher(fname, X, fmt=None, delimiter=None, newline=None,
+                        header=None, footer=None, comments=None,
+                        encoding=None):
+    return (X,)
+
+
+@array_function_dispatch(_savetxt_dispatcher)
 def savetxt(fname, X, fmt='%.18e', delimiter=' ', newline='\n', header='',
             footer='', comments='# ', encoding=None):
     """
@@ -1258,8 +1293,8 @@ def savetxt(fname, X, fmt='%.18e', delimiter=' ', newline='\n', header='',
     References
     ----------
     .. [1] `Format Specification Mini-Language
-           <http://docs.python.org/library/string.html#
-           format-specification-mini-language>`_, Python Documentation.
+           <https://docs.python.org/library/string.html#format-specification-mini-language>`_,
+           Python Documentation.
 
     Examples
     --------
@@ -1623,7 +1658,7 @@ def genfromtxt(fname, dtype=float, comments='#', delimiter=None,
     References
     ----------
     .. [1] NumPy User Guide, section `I/O with NumPy
-           <http://docs.scipy.org/doc/numpy/user/basics.io.genfromtxt.html>`_.
+           <https://docs.scipy.org/doc/numpy/user/basics.io.genfromtxt.html>`_.
 
     Examples
     ---------

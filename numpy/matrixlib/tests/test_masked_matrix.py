@@ -1,12 +1,15 @@
 from __future__ import division, absolute_import, print_function
 
-import pickle
+import pytest
 
 import numpy as np
-from numpy.ma.testutils import assert_, assert_equal
+from numpy.ma.testutils import (assert_, assert_equal, assert_raises,
+                                assert_array_equal)
 from numpy.ma.core import (masked_array, masked_values, masked, allequal,
                            MaskType, getmask, MaskedArray, nomask,
                            log, add, hypot, divide)
+from numpy.ma.extras import mr_
+from numpy.core.numeric import pickle
 
 
 class MMatrix(MaskedArray, np.matrix,):
@@ -76,10 +79,11 @@ class TestMaskedMatrix(object):
     def test_pickling_subbaseclass(self):
         # Test pickling w/ a subclass of ndarray
         a = masked_array(np.matrix(list(range(10))), mask=[1, 0, 1, 0, 0] * 2)
-        a_pickled = pickle.loads(a.dumps())
-        assert_equal(a_pickled._mask, a._mask)
-        assert_equal(a_pickled, a)
-        assert_(isinstance(a_pickled._data, np.matrix))
+        for proto in range(2, pickle.HIGHEST_PROTOCOL + 1):
+            a_pickled = pickle.loads(pickle.dumps(a, protocol=proto))
+            assert_equal(a_pickled._mask, a._mask)
+            assert_equal(a_pickled, a)
+            assert_(isinstance(a_pickled._data, np.matrix))
 
     def test_count_mean_with_matrix(self):
         m = masked_array(np.matrix([[1, 2], [3, 4]]), mask=np.zeros((2, 2)))
@@ -209,3 +213,21 @@ class TestSubclassing(object):
         assert_(isinstance(divide(mx, mx), MMatrix))
         assert_(isinstance(divide(mx, x), MMatrix))
         assert_equal(divide(mx, mx), divide(xmx, xmx))
+
+class TestConcatenator(object):
+    # Tests for mr_, the equivalent of r_ for masked arrays.
+
+    def test_matrix_builder(self):
+        assert_raises(np.ma.MAError, lambda: mr_['1, 2; 3, 4'])
+
+    def test_matrix(self):
+        # Test consistency with unmasked version.  If we ever deprecate
+        # matrix, this test should either still pass, or both actual and
+        # expected should fail to be build.
+        actual = mr_['r', 1, 2, 3]
+        expected = np.ma.array(np.r_['r', 1, 2, 3])
+        assert_array_equal(actual, expected)
+
+        # outer type is masked array, inner type is matrix
+        assert_equal(type(actual), type(expected))
+        assert_equal(type(actual.data), type(expected.data))

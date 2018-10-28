@@ -471,12 +471,9 @@ class TestSeterr(object):
     @pytest.mark.skipif(platform.machine() == "armv5tel", reason="See gh-413.")
     def test_divide_err(self):
         with np.errstate(divide='raise'):
-            try:
+            with assert_raises(FloatingPointError):
                 np.array([1.]) / np.array([0.])
-            except FloatingPointError:
-                pass
-            else:
-                self.fail()
+
             np.seterr(divide='ignore')
             np.array([1.]) / np.array([0.])
 
@@ -552,7 +549,6 @@ class TestFloatExceptions(object):
         self.assert_raises_fpe(fpeerr, flop, sc1, sc2[()])
         self.assert_raises_fpe(fpeerr, flop, sc1[()], sc2[()])
 
-    @pytest.mark.xfail(reason="See ticket #2350")
     def test_floating_exceptions(self):
         # Test basic arithmetic function errors
         with np.errstate(all='raise'):
@@ -905,7 +901,7 @@ class TestTypes(object):
             fi = np.finfo(dt)
             assert_(np.can_cast(fi.min, dt))
             assert_(np.can_cast(fi.max, dt))
-            
+
 
 # Custom exception class to test exception propagation in fromiter
 class NIterError(Exception):
@@ -1276,7 +1272,6 @@ class TestArrayComparisons(object):
         assert_equal(a == None, [False, False, False])
         assert_equal(a != None, [True, True, True])
 
-
     def test_array_equiv(self):
         res = np.array_equiv(np.array([1, 2]), np.array([1, 2]))
         assert_(res)
@@ -1531,7 +1526,7 @@ class TestClip(object):
         m = -0.5
         M = 0.6
         self.fastclip(a, m, M, a)
-        self.clip(a, m, M, ac)
+        self.clip(ac, m, M, ac)
         assert_array_strict_equal(a, ac)
 
     def test_noncontig_inplace(self):
@@ -1544,7 +1539,7 @@ class TestClip(object):
         m = -0.5
         M = 0.6
         self.fastclip(a, m, M, a)
-        self.clip(a, m, M, ac)
+        self.clip(ac, m, M, ac)
         assert_array_equal(a, ac)
 
     def test_type_cast_01(self):
@@ -1722,6 +1717,22 @@ class TestClip(object):
         self.fastclip(a, m, M, ac)
         self.clip(a, m, M, act)
         assert_array_strict_equal(ac, act)
+
+    def test_clip_with_out_transposed(self):
+        # Test that the out argument works when tranposed
+        a = np.arange(16).reshape(4, 4)
+        out = np.empty_like(a).T
+        a.clip(4, 10, out=out)
+        expected = self.clip(a, 4, 10)
+        assert_array_equal(out, expected)
+
+    def test_clip_with_out_memory_overlap(self):
+        # Test that the out argument works when it has memory overlap
+        a = np.arange(16).reshape(4, 4)
+        ac = a.copy()
+        a[:-1].clip(4, 10, out=a[1:])
+        expected = self.clip(ac[:-1], 4, 10)
+        assert_array_equal(a[1:], expected)
 
     def test_clip_inplace_array(self):
         # Test native double input with array min/max
@@ -2201,13 +2212,16 @@ class TestLikeFuncs(object):
             self.compare_array_value(dz, value, fill_value)
 
         # Test the 'subok' parameter
-        a = np.matrix([[1, 2], [3, 4]])
+        class MyNDArray(np.ndarray):
+            pass
+
+        a = np.array([[1, 2], [3, 4]]).view(MyNDArray)
 
         b = like_function(a, **fill_kwarg)
-        assert_(type(b) is np.matrix)
+        assert_(type(b) is MyNDArray)
 
         b = like_function(a, subok=False, **fill_kwarg)
-        assert_(type(b) is not np.matrix)
+        assert_(type(b) is not MyNDArray)
 
     def test_ones_like(self):
         self.check_like_function(np.ones_like, 1)

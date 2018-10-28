@@ -42,12 +42,13 @@ from . import numerictypes as _nt
 from .umath import absolute, not_equal, isnan, isinf, isfinite, isnat
 from . import multiarray
 from .multiarray import (array, dragon4_positional, dragon4_scientific,
-                         datetime_as_string, datetime_data, dtype, ndarray,
+                         datetime_as_string, datetime_data, ndarray,
                          set_legacy_print_mode)
 from .fromnumeric import ravel, any
 from .numeric import concatenate, asarray, errstate
 from .numerictypes import (longlong, intc, int_, float_, complex_, bool_,
                            flexible)
+from .overrides import array_function_dispatch
 import warnings
 import contextlib
 
@@ -496,6 +497,16 @@ def _array2string(a, options, separator=' ', prefix=""):
     return lst
 
 
+def _array2string_dispatcher(
+        a, max_line_width=None, precision=None,
+        suppress_small=None, separator=None, prefix=None,
+        style=None, formatter=None, threshold=None,
+        edgeitems=None, sign=None, floatmode=None, suffix=None,
+        **kwarg):
+    return (a,)
+
+
+@array_function_dispatch(_array2string_dispatcher, module='numpy')
 def array2string(a, max_line_width=None, precision=None,
                  suppress_small=None, separator=' ', prefix="",
                  style=np._NoValue, formatter=None, threshold=None,
@@ -528,6 +539,8 @@ def array2string(a, max_line_width=None, precision=None,
 
         The output is left-padded by the length of the prefix string, and
         wrapping is forced at the column ``max_line_width - len(suffix)``.
+        It should be noted that the content of prefix and suffix strings are
+        not included in the output.
     style : _NoValue, optional
         Has no effect, do not use.
 
@@ -1368,48 +1381,10 @@ def dtype_short_repr(dtype):
     return typename
 
 
-def array_repr(arr, max_line_width=None, precision=None, suppress_small=None):
-    """
-    Return the string representation of an array.
-
-    Parameters
-    ----------
-    arr : ndarray
-        Input array.
-    max_line_width : int, optional
-        The maximum number of columns the string should span. Newline
-        characters split the string appropriately after array elements.
-    precision : int, optional
-        Floating point precision. Default is the current printing precision
-        (usually 8), which can be altered using `set_printoptions`.
-    suppress_small : bool, optional
-        Represent very small numbers as zero, default is False. Very small
-        is defined by `precision`, if the precision is 8 then
-        numbers smaller than 5e-9 are represented as zero.
-
-    Returns
-    -------
-    string : str
-      The string representation of an array.
-
-    See Also
-    --------
-    array_str, array2string, set_printoptions
-
-    Examples
-    --------
-    >>> np.array_repr(np.array([1,2]))
-    'array([1, 2])'
-    >>> np.array_repr(np.ma.array([0.]))
-    'MaskedArray([ 0.])'
-    >>> np.array_repr(np.array([], np.int32))
-    'array([], dtype=int32)'
-
-    >>> x = np.array([1e-6, 4e-7, 2, 3])
-    >>> np.array_repr(x, precision=6, suppress_small=True)
-    'array([ 0.000001,  0.      ,  2.      ,  3.      ])'
-
-    """
+def _array_repr_implementation(
+        arr, max_line_width=None, precision=None, suppress_small=None,
+        array2string=array2string):
+    """Internal version of array_repr() that allows overriding array2string."""
     if max_line_width is None:
         max_line_width = _format_options['linewidth']
 
@@ -1452,8 +1427,88 @@ def array_repr(arr, max_line_width=None, precision=None, suppress_small=None):
 
     return arr_str + spacer + dtype_str
 
+
+def _array_repr_dispatcher(
+        arr, max_line_width=None, precision=None, suppress_small=None):
+    return (arr,)
+
+
+@array_function_dispatch(_array_repr_dispatcher, module='numpy')
+def array_repr(arr, max_line_width=None, precision=None, suppress_small=None):
+    """
+    Return the string representation of an array.
+
+    Parameters
+    ----------
+    arr : ndarray
+        Input array.
+    max_line_width : int, optional
+        The maximum number of columns the string should span. Newline
+        characters split the string appropriately after array elements.
+    precision : int, optional
+        Floating point precision. Default is the current printing precision
+        (usually 8), which can be altered using `set_printoptions`.
+    suppress_small : bool, optional
+        Represent very small numbers as zero, default is False. Very small
+        is defined by `precision`, if the precision is 8 then
+        numbers smaller than 5e-9 are represented as zero.
+
+    Returns
+    -------
+    string : str
+      The string representation of an array.
+
+    See Also
+    --------
+    array_str, array2string, set_printoptions
+
+    Examples
+    --------
+    >>> np.array_repr(np.array([1,2]))
+    'array([1, 2])'
+    >>> np.array_repr(np.ma.array([0.]))
+    'MaskedArray([ 0.])'
+    >>> np.array_repr(np.array([], np.int32))
+    'array([], dtype=int32)'
+
+    >>> x = np.array([1e-6, 4e-7, 2, 3])
+    >>> np.array_repr(x, precision=6, suppress_small=True)
+    'array([ 0.000001,  0.      ,  2.      ,  3.      ])'
+
+    """
+    return _array_repr_implementation(
+        arr, max_line_width, precision, suppress_small)
+
+
 _guarded_str = _recursive_guard()(str)
 
+
+def _array_str_implementation(
+        a, max_line_width=None, precision=None, suppress_small=None,
+        array2string=array2string):
+    """Internal version of array_str() that allows overriding array2string."""
+    if (_format_options['legacy'] == '1.13' and
+            a.shape == () and not a.dtype.names):
+        return str(a.item())
+
+    # the str of 0d arrays is a special case: It should appear like a scalar,
+    # so floats are not truncated by `precision`, and strings are not wrapped
+    # in quotes. So we return the str of the scalar value.
+    if a.shape == ():
+        # obtain a scalar and call str on it, avoiding problems for subclasses
+        # for which indexing with () returns a 0d instead of a scalar by using
+        # ndarray's getindex. Also guard against recursive 0d object arrays.
+        return _guarded_str(np.ndarray.__getitem__(a, ()))
+
+    return array2string(a, max_line_width, precision, suppress_small, ' ', "")
+
+
+def _array_str_dispatcher(
+        a, max_line_width=None, precision=None, suppress_small=None):
+    return (a,)
+
+
+@array_function_dispatch(_array_str_dispatcher, module='numpy')
 def array_str(a, max_line_width=None, precision=None, suppress_small=None):
     """
     Return a string representation of the data in an array.
@@ -1488,20 +1543,15 @@ def array_str(a, max_line_width=None, precision=None, suppress_small=None):
     '[0 1 2]'
 
     """
-    if (_format_options['legacy'] == '1.13' and
-            a.shape == () and not a.dtype.names):
-        return str(a.item())
+    return _array_str_implementation(
+        a, max_line_width, precision, suppress_small)
 
-    # the str of 0d arrays is a special case: It should appear like a scalar,
-    # so floats are not truncated by `precision`, and strings are not wrapped
-    # in quotes. So we return the str of the scalar value.
-    if a.shape == ():
-        # obtain a scalar and call str on it, avoiding problems for subclasses
-        # for which indexing with () returns a 0d instead of a scalar by using
-        # ndarray's getindex. Also guard against recursive 0d object arrays.
-        return _guarded_str(np.ndarray.__getitem__(a, ()))
 
-    return array2string(a, max_line_width, precision, suppress_small, ' ', "")
+_default_array_str = functools.partial(_array_str_implementation,
+                                       array2string=array2string.__wrapped__)
+_default_array_repr = functools.partial(_array_repr_implementation,
+                                        array2string=array2string.__wrapped__)
+
 
 def set_string_function(f, repr=True):
     """
@@ -1556,11 +1606,11 @@ def set_string_function(f, repr=True):
     """
     if f is None:
         if repr:
-            return multiarray.set_string_function(array_repr, 1)
+            return multiarray.set_string_function(_default_array_repr, 1)
         else:
-            return multiarray.set_string_function(array_str, 0)
+            return multiarray.set_string_function(_default_array_str, 0)
     else:
         return multiarray.set_string_function(f, repr)
 
-set_string_function(array_str, 0)
-set_string_function(array_repr, 1)
+set_string_function(_default_array_str, 0)
+set_string_function(_default_array_repr, 1)

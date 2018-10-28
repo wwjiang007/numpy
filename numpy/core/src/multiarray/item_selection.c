@@ -19,6 +19,7 @@
 #include "arrayobject.h"
 #include "ctors.h"
 #include "lowlevel_strided_loops.h"
+#include "array_assign.h"
 
 #include "item_selection.h"
 #include "npy_sort.h"
@@ -809,7 +810,7 @@ _new_sortlike(PyArrayObject *op, int axis, PyArray_SortFunc *sort,
     npy_intp elsize = (npy_intp)PyArray_ITEMSIZE(op);
     npy_intp astride = PyArray_STRIDE(op, axis);
     int swap = PyArray_ISBYTESWAPPED(op);
-    int needcopy = !PyArray_ISALIGNED(op) || swap || astride != elsize;
+    int needcopy = !IsAligned(op) || swap || astride != elsize;
     int hasrefs = PyDataType_REFCHK(PyArray_DESCR(op));
 
     PyArray_CopySwapNFunc *copyswapn = PyArray_DESCR(op)->f->copyswapn;
@@ -833,8 +834,6 @@ _new_sortlike(PyArrayObject *op, int axis, PyArray_SortFunc *sort,
     }
     size = it->size;
 
-    NPY_BEGIN_THREADS_DESCR(PyArray_DESCR(op));
-
     if (needcopy) {
         buffer = npy_alloc_cache(N * elsize);
         if (buffer == NULL) {
@@ -842,6 +841,8 @@ _new_sortlike(PyArrayObject *op, int axis, PyArray_SortFunc *sort,
             goto fail;
         }
     }
+
+    NPY_BEGIN_THREADS_DESCR(PyArray_DESCR(op));
 
     while (size--) {
         char *bufptr = it->dataptr;
@@ -917,8 +918,8 @@ _new_sortlike(PyArrayObject *op, int axis, PyArray_SortFunc *sort,
     }
 
 fail:
-    npy_free_cache(buffer, N * elsize);
     NPY_END_THREADS_DESCR(PyArray_DESCR(op));
+    npy_free_cache(buffer, N * elsize);
     if (ret < 0 && !PyErr_Occurred()) {
         /* Out of memory during sorting or buffer creation */
         PyErr_NoMemory();
@@ -937,7 +938,7 @@ _new_argsortlike(PyArrayObject *op, int axis, PyArray_ArgSortFunc *argsort,
     npy_intp elsize = (npy_intp)PyArray_ITEMSIZE(op);
     npy_intp astride = PyArray_STRIDE(op, axis);
     int swap = PyArray_ISBYTESWAPPED(op);
-    int needcopy = !PyArray_ISALIGNED(op) || swap || astride != elsize;
+    int needcopy = !IsAligned(op) || swap || astride != elsize;
     int hasrefs = PyDataType_REFCHK(PyArray_DESCR(op));
     int needidxbuffer;
 
@@ -955,9 +956,10 @@ _new_argsortlike(PyArrayObject *op, int axis, PyArray_ArgSortFunc *argsort,
 
     NPY_BEGIN_THREADS_DEF;
 
-    rop = (PyArrayObject *)PyArray_New(Py_TYPE(op), PyArray_NDIM(op),
-                                       PyArray_DIMS(op), NPY_INTP,
-                                       NULL, NULL, 0, 0, (PyObject *)op);
+    rop = (PyArrayObject *)PyArray_NewFromDescr(
+            Py_TYPE(op), PyArray_DescrFromType(NPY_INTP),
+            PyArray_NDIM(op), PyArray_DIMS(op), NULL, NULL,
+            0, (PyObject *)op);
     if (rop == NULL) {
         return NULL;
     }
@@ -978,8 +980,6 @@ _new_argsortlike(PyArrayObject *op, int axis, PyArray_ArgSortFunc *argsort,
     }
     size = it->size;
 
-    NPY_BEGIN_THREADS_DESCR(PyArray_DESCR(op));
-
     if (needcopy) {
         valbuffer = npy_alloc_cache(N * elsize);
         if (valbuffer == NULL) {
@@ -995,6 +995,8 @@ _new_argsortlike(PyArrayObject *op, int axis, PyArray_ArgSortFunc *argsort,
             goto fail;
         }
     }
+
+    NPY_BEGIN_THREADS_DESCR(PyArray_DESCR(op));
 
     while (size--) {
         char *valptr = it->dataptr;
@@ -1079,9 +1081,9 @@ _new_argsortlike(PyArrayObject *op, int axis, PyArray_ArgSortFunc *argsort,
     }
 
 fail:
+    NPY_END_THREADS_DESCR(PyArray_DESCR(op));
     npy_free_cache(valbuffer, N * elsize);
     npy_free_cache(idxbuffer, N * sizeof(npy_intp));
-    NPY_END_THREADS_DESCR(PyArray_DESCR(op));
     if (ret < 0) {
         if (!PyErr_Occurred()) {
             /* Out of memory during sorting or buffer creation */
@@ -1439,10 +1441,10 @@ PyArray_LexSort(PyObject *sort_keys, int axis)
     nd = PyArray_NDIM(mps[0]);
     if ((nd == 0) || (PyArray_SIZE(mps[0]) == 1)) {
         /* single element case */
-        ret = (PyArrayObject *)PyArray_New(&PyArray_Type, PyArray_NDIM(mps[0]),
-                                           PyArray_DIMS(mps[0]),
-                                           NPY_INTP,
-                                           NULL, NULL, 0, 0, NULL);
+        ret = (PyArrayObject *)PyArray_NewFromDescr(
+            &PyArray_Type, PyArray_DescrFromType(NPY_INTP),
+            PyArray_NDIM(mps[0]), PyArray_DIMS(mps[0]), NULL, NULL,
+            0, NULL);
 
         if (ret == NULL) {
             goto fail;
@@ -1463,9 +1465,10 @@ PyArray_LexSort(PyObject *sort_keys, int axis)
     }
 
     /* Now do the sorting */
-    ret = (PyArrayObject *)PyArray_New(&PyArray_Type, PyArray_NDIM(mps[0]),
-                                       PyArray_DIMS(mps[0]), NPY_INTP,
-                                       NULL, NULL, 0, 0, NULL);
+    ret = (PyArrayObject *)PyArray_NewFromDescr(
+            &PyArray_Type, PyArray_DescrFromType(NPY_INTP),
+            PyArray_NDIM(mps[0]), PyArray_DIMS(mps[0]), NULL, NULL,
+            0, NULL);
     if (ret == NULL) {
         goto fail;
     }
@@ -1496,13 +1499,13 @@ PyArray_LexSort(PyObject *sort_keys, int axis)
         char *valbuffer, *indbuffer;
         int *swaps;
 
-        valbuffer = npy_alloc_cache(N * maxelsize);
+        valbuffer = PyDataMem_NEW(N * maxelsize);
         if (valbuffer == NULL) {
             goto fail;
         }
-        indbuffer = npy_alloc_cache(N * sizeof(npy_intp));
+        indbuffer = PyDataMem_NEW(N * sizeof(npy_intp));
         if (indbuffer == NULL) {
-            npy_free_cache(indbuffer, N * sizeof(npy_intp));
+            PyDataMem_FREE(indbuffer);
             goto fail;
         }
         swaps = malloc(n*sizeof(int));
@@ -1545,8 +1548,8 @@ PyArray_LexSort(PyObject *sort_keys, int axis)
                                          sizeof(npy_intp), N, sizeof(npy_intp));
             PyArray_ITER_NEXT(rit);
         }
-        npy_free_cache(valbuffer, N * maxelsize);
-        npy_free_cache(indbuffer, N * sizeof(npy_intp));
+        PyDataMem_FREE(valbuffer);
+        PyDataMem_FREE(indbuffer);
         free(swaps);
     }
     else {
@@ -1737,9 +1740,10 @@ PyArray_SearchSorted(PyArrayObject *op1, PyObject *op2,
     }
 
     /* ret is a contiguous array of intp type to hold returned indexes */
-    ret = (PyArrayObject *)PyArray_New(&PyArray_Type, PyArray_NDIM(ap2),
-                                       PyArray_DIMS(ap2), NPY_INTP,
-                                       NULL, NULL, 0, 0, (PyObject *)ap2);
+    ret = (PyArrayObject *)PyArray_NewFromDescr(
+            &PyArray_Type, PyArray_DescrFromType(NPY_INTP),
+            PyArray_NDIM(ap2), PyArray_DIMS(ap2), NULL, NULL,
+            0, (PyObject *)ap2);
     if (ret == NULL) {
         goto fail;
     }
@@ -1873,19 +1877,11 @@ PyArray_Diagonal(PyArrayObject *self, int offset, int axis1, int axis2)
     /* Create the diagonal view */
     dtype = PyArray_DTYPE(self);
     Py_INCREF(dtype);
-    ret = PyArray_NewFromDescr(Py_TYPE(self),
-                               dtype,
-                               ndim-1, ret_shape,
-                               ret_strides,
-                               data,
-                               PyArray_FLAGS(self),
-                               (PyObject *)self);
+    ret = PyArray_NewFromDescrAndBase(
+            Py_TYPE(self), dtype,
+            ndim-1, ret_shape, ret_strides, data,
+            PyArray_FLAGS(self), (PyObject *)self, (PyObject *)self);
     if (ret == NULL) {
-        return NULL;
-    }
-    Py_INCREF(self);
-    if (PyArray_SetBaseObject((PyArrayObject *)ret, (PyObject *)self) < 0) {
-        Py_DECREF(ret);
         return NULL;
     }
 
@@ -2207,9 +2203,10 @@ PyArray_Nonzero(PyArrayObject *self)
     /* Allocate the result as a 2D array */
     ret_dims[0] = nonzero_count;
     ret_dims[1] = (ndim == 0) ? 1 : ndim;
-    ret = (PyArrayObject *)PyArray_New(&PyArray_Type, 2, ret_dims,
-                       NPY_INTP, NULL, NULL, 0, 0,
-                       NULL);
+    ret = (PyArrayObject *)PyArray_NewFromDescr(
+            &PyArray_Type, PyArray_DescrFromType(NPY_INTP),
+            2, ret_dims, NULL, NULL,
+            0, NULL);
     if (ret == NULL) {
         return NULL;
     }
@@ -2361,17 +2358,11 @@ finish:
         /* the result is an empty array, the view must point to valid memory */
         npy_intp data_offset = is_empty ? 0 : i * NPY_SIZEOF_INTP;
 
-        PyArrayObject *view = (PyArrayObject *)PyArray_New(Py_TYPE(ret), 1,
-                                    &nonzero_count, NPY_INTP, &stride,
-                                    PyArray_BYTES(ret) + data_offset,
-                                    0, PyArray_FLAGS(ret), (PyObject *)ret);
+        PyArrayObject *view = (PyArrayObject *)PyArray_NewFromDescrAndBase(
+            Py_TYPE(ret), PyArray_DescrFromType(NPY_INTP),
+            1, &nonzero_count, &stride, PyArray_BYTES(ret) + data_offset,
+            PyArray_FLAGS(ret), (PyObject *)ret, (PyObject *)ret);
         if (view == NULL) {
-            Py_DECREF(ret);
-            Py_DECREF(ret_tuple);
-            return NULL;
-        }
-        Py_INCREF(ret);
-        if (PyArray_SetBaseObject(view, (PyObject *)ret) < 0) {
             Py_DECREF(ret);
             Py_DECREF(ret_tuple);
             return NULL;

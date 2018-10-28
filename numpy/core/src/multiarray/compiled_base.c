@@ -11,6 +11,7 @@
 #include "templ_common.h" /* for npy_mul_with_overflow_intp */
 #include "lowlevel_strided_loops.h" /* for npy_bswap8 */
 #include "alloc.h"
+#include "ctors.h"
 #include "common.h"
 
 
@@ -20,11 +21,17 @@
  * and 0 if the array is not monotonic.
  */
 static int
-check_array_monotonic(const double *a, npy_int lena)
+check_array_monotonic(const double *a, npy_intp lena)
 {
     npy_intp i;
     double next;
-    double last = a[0];
+    double last;
+
+    if (lena == 0) {
+        /* all bin edges hold the same value */
+        return 1;
+    }
+    last = a[0];
 
     /* Skip repeated values at the beginning of the array */
     for (i = 1; (i < lena) && (a[i] == last); i++);
@@ -208,110 +215,41 @@ fail:
     return NULL;
 }
 
-/*
- * digitize(x, bins, right=False) returns an array of integers the same length
- * as x. The values i returned are such that bins[i - 1] <= x < bins[i] if
- * bins is monotonically increasing, or bins[i - 1] > x >= bins[i] if bins
- * is monotonically decreasing.  Beyond the bounds of bins, returns either
- * i = 0 or i = len(bins) as appropriate. If right == True the comparison
- * is bins [i - 1] < x <= bins[i] or bins [i - 1] >= x > bins[i]
- */
+/* Internal function to expose check_array_monotonic to python */
 NPY_NO_EXPORT PyObject *
-arr_digitize(PyObject *NPY_UNUSED(self), PyObject *args, PyObject *kwds)
+arr__monotonicity(PyObject *NPY_UNUSED(self), PyObject *args, PyObject *kwds)
 {
+    static char *kwlist[] = {"x", NULL};
     PyObject *obj_x = NULL;
-    PyObject *obj_bins = NULL;
     PyArrayObject *arr_x = NULL;
-    PyArrayObject *arr_bins = NULL;
-    PyObject *ret = NULL;
-    npy_intp len_bins;
-    int monotonic, right = 0;
-    NPY_BEGIN_THREADS_DEF
+    long monotonic;
+    npy_intp len_x;
+    NPY_BEGIN_THREADS_DEF;
 
-    static char *kwlist[] = {"x", "bins", "right", NULL};
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OO|i:digitize", kwlist,
-                                     &obj_x, &obj_bins, &right)) {
-        goto fail;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|_monotonicity", kwlist,
+                                     &obj_x)) {
+        return NULL;
     }
 
-    /* PyArray_SearchSorted will make `x` contiguous even if we don't */
-    arr_x = (PyArrayObject *)PyArray_FROMANY(obj_x, NPY_DOUBLE, 0, 0,
-                                             NPY_ARRAY_CARRAY_RO);
+    /*
+     * TODO:
+     *  `x` could be strided, needs change to check_array_monotonic
+     *  `x` is forced to double for this check
+     */
+    arr_x = (PyArrayObject *)PyArray_FROMANY(
+        obj_x, NPY_DOUBLE, 1, 1, NPY_ARRAY_CARRAY_RO);
     if (arr_x == NULL) {
-        goto fail;
+        return NULL;
     }
 
-    /* TODO: `bins` could be strided, needs change to check_array_monotonic */
-    arr_bins = (PyArrayObject *)PyArray_FROMANY(obj_bins, NPY_DOUBLE, 1, 1,
-                                               NPY_ARRAY_CARRAY_RO);
-    if (arr_bins == NULL) {
-        goto fail;
-    }
-
-    len_bins = PyArray_SIZE(arr_bins);
-    if (len_bins == 0) {
-        PyErr_SetString(PyExc_ValueError, "bins must have non-zero length");
-        goto fail;
-    }
-
-    NPY_BEGIN_THREADS_THRESHOLDED(len_bins)
-    monotonic = check_array_monotonic((const double *)PyArray_DATA(arr_bins),
-                                      len_bins);
+    len_x = PyArray_SIZE(arr_x);
+    NPY_BEGIN_THREADS_THRESHOLDED(len_x)
+    monotonic = check_array_monotonic(
+        (const double *)PyArray_DATA(arr_x), len_x);
     NPY_END_THREADS
+    Py_DECREF(arr_x);
 
-    if (monotonic == 0) {
-        PyErr_SetString(PyExc_ValueError,
-                        "bins must be monotonically increasing or decreasing");
-        goto fail;
-    }
-
-    /* PyArray_SearchSorted needs an increasing array */
-    if (monotonic == - 1) {
-        PyArrayObject *arr_tmp = NULL;
-        npy_intp shape = PyArray_DIM(arr_bins, 0);
-        npy_intp stride = -PyArray_STRIDE(arr_bins, 0);
-        void *data = (void *)(PyArray_BYTES(arr_bins) - stride * (shape - 1));
-
-        arr_tmp = (PyArrayObject *)PyArray_New(&PyArray_Type, 1, &shape,
-                                               NPY_DOUBLE, &stride, data, 0,
-                                               PyArray_FLAGS(arr_bins), NULL);
-        if (!arr_tmp) {
-            goto fail;
-        }
-
-        if (PyArray_SetBaseObject(arr_tmp, (PyObject *)arr_bins) < 0) {
-
-            Py_DECREF(arr_tmp);
-            goto fail;
-        }
-        arr_bins = arr_tmp;
-    }
-
-    ret = PyArray_SearchSorted(arr_bins, (PyObject *)arr_x,
-                               right ? NPY_SEARCHLEFT : NPY_SEARCHRIGHT, NULL);
-    if (!ret) {
-        goto fail;
-    }
-
-    /* If bins is decreasing, ret has bins from end, not start */
-    if (monotonic == -1) {
-        npy_intp *ret_data =
-                        (npy_intp *)PyArray_DATA((PyArrayObject *)ret);
-        npy_intp len_ret = PyArray_SIZE((PyArrayObject *)ret);
-
-        NPY_BEGIN_THREADS_THRESHOLDED(len_ret)
-        while (len_ret--) {
-            *ret_data = len_bins - *ret_data;
-            ret_data++;
-        }
-        NPY_END_THREADS
-    }
-
-    fail:
-        Py_XDECREF(arr_x);
-        Py_XDECREF(arr_bins);
-        return ret;
+    return PyInt_FromLong(monotonic);
 }
 
 /*
@@ -657,6 +595,10 @@ arr_interp(PyObject *NPY_UNUSED(self), PyObject *args, PyObject *kwdict)
             else if (j == lenxp - 1) {
                 dres[i] = dy[j];
             }
+            else if (dx[j] == x_val) {
+                /* Avoid potential non-finite interpolation */
+                dres[i] = dy[j];
+            }
             else {
                 const npy_double slope = (slopes != NULL) ? slopes[j] :
                                          (dy[j+1] - dy[j]) / (dx[j+1] - dx[j]);
@@ -823,6 +765,10 @@ arr_interp_complex(PyObject *NPY_UNUSED(self), PyObject *args, PyObject *kwdict)
                 dres[i] = rval;
             }
             else if (j == lenxp - 1) {
+                dres[i] = dy[j];
+            }
+            else if (dx[j] == x_val) {
+                /* Avoid potential non-finite interpolation */
                 dres[i] = dy[j];
             }
             else {
@@ -1210,7 +1156,27 @@ arr_unravel_index(PyObject *self, PyObject *args, PyObject *kwds)
     int i, ret_ndim;
     npy_intp ret_dims[NPY_MAXDIMS], ret_strides[NPY_MAXDIMS];
 
-    char *kwlist[] = {"indices", "dims", "order", NULL};
+    char *kwlist[] = {"indices", "shape", "order", NULL};
+
+    /* Continue to support the older "dims" argument in place
+     * of the "shape" argument. Issue an appropriate warning
+     * if "dims" is detected in keywords, then replace it with
+     * the new "shape" argument and continue processing as usual */
+
+
+    if (kwds) {
+        PyObject *dims_item, *shape_item;
+        dims_item = PyDict_GetItemString(kwds, "dims");
+        shape_item = PyDict_GetItemString(kwds, "shape");
+        if (dims_item != NULL && shape_item == NULL) {
+            if (DEPRECATE("'shape' argument should be"
+                          " used instead of 'dims'") < 0) {
+                return NULL;
+            }
+            PyDict_SetItemString(kwds, "shape", dims_item);
+            PyDict_DelItemString(kwds, "dims");
+        }
+    }
 
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "OO&|O&:unravel_index",
                     kwlist,
@@ -1362,17 +1328,12 @@ arr_unravel_index(PyObject *self, PyObject *args, PyObject *kwds)
     for (i = 0; i < dimensions.len; ++i) {
         PyArrayObject *view;
 
-        view = (PyArrayObject *)PyArray_New(&PyArray_Type, ret_ndim-1,
-                                ret_dims, NPY_INTP,
-                                ret_strides,
-                                PyArray_BYTES(ret_arr) + i*sizeof(npy_intp),
-                                0, NPY_ARRAY_WRITEABLE, NULL);
+        view = (PyArrayObject *)PyArray_NewFromDescrAndBase(
+                &PyArray_Type, PyArray_DescrFromType(NPY_INTP),
+                ret_ndim - 1, ret_dims, ret_strides,
+                PyArray_BYTES(ret_arr) + i*sizeof(npy_intp),
+                NPY_ARRAY_WRITEABLE, NULL, (PyObject *)ret_arr);
         if (view == NULL) {
-            goto fail;
-        }
-        Py_INCREF(ret_arr);
-        if (PyArray_SetBaseObject(view, (PyObject *)ret_arr) < 0) {
-            Py_DECREF(view);
             goto fail;
         }
         PyTuple_SET_ITEM(ret_tuple, i, PyArray_Return(view));
@@ -1621,8 +1582,10 @@ pack_bits(PyObject *input, int axis)
     if (PyArray_NDIM(new) == 0) {
         char *optr, *iptr;
 
-        out = (PyArrayObject *)PyArray_New(Py_TYPE(new), 0, NULL, NPY_UBYTE,
-                NULL, NULL, 0, 0, NULL);
+        out = (PyArrayObject *)PyArray_NewFromDescr(
+                Py_TYPE(new), PyArray_DescrFromType(NPY_UBYTE),
+                0, NULL, NULL, NULL,
+                0, NULL);
         if (out == NULL) {
             goto fail;
         }
@@ -1652,9 +1615,10 @@ pack_bits(PyObject *input, int axis)
     outdims[axis] = ((outdims[axis] - 1) >> 3) + 1;
 
     /* Create output array */
-    out = (PyArrayObject *)PyArray_New(Py_TYPE(new),
-                        PyArray_NDIM(new), outdims, NPY_UBYTE,
-                        NULL, NULL, 0, PyArray_ISFORTRAN(new), NULL);
+    out = (PyArrayObject *)PyArray_NewFromDescr(
+            Py_TYPE(new), PyArray_DescrFromType(NPY_UBYTE),
+            PyArray_NDIM(new), outdims, NULL, NULL,
+            PyArray_ISFORTRAN(new), NULL);
     if (out == NULL) {
         goto fail;
     }
@@ -1746,9 +1710,10 @@ unpack_bits(PyObject *input, int axis)
     outdims[axis] <<= 3;
 
     /* Create output array */
-    out = (PyArrayObject *)PyArray_New(Py_TYPE(new),
-                        PyArray_NDIM(new), outdims, NPY_UBYTE,
-                        NULL, NULL, 0, PyArray_ISFORTRAN(new), NULL);
+    out = (PyArrayObject *)PyArray_NewFromDescr(
+            Py_TYPE(new), PyArray_DescrFromType(NPY_UBYTE),
+            PyArray_NDIM(new), outdims, NULL, NULL,
+            PyArray_ISFORTRAN(new), NULL);
     if (out == NULL) {
         goto fail;
     }

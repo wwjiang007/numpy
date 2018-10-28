@@ -7,13 +7,11 @@
 */
 
 #define _UMATHMODULE
+#define _MULTIARRAYMODULE
 #define NPY_NO_DEPRECATED_API NPY_API_VERSION
 
 #include "Python.h"
 #include "npy_config.h"
-#define PY_ARRAY_UNIQUE_SYMBOL _npy_umathmodule_ARRAY_API
-#define NO_IMPORT_ARRAY
-
 #include "numpy/arrayobject.h"
 #include "numpy/ufuncobject.h"
 #include "numpy/arrayscalars.h"
@@ -848,7 +846,7 @@ static PyObject *
     }
 
 #if @fperr@
-    PyUFunc_clearfperr();
+    npy_clear_floatstatus_barrier((char*)&out);
 #endif
 
     /*
@@ -863,7 +861,7 @@ static PyObject *
 
 #if @fperr@
     /* Check status flag.  If it is set, then look up what to do */
-    retstatus = PyUFunc_getfperr();
+    retstatus = npy_get_floatstatus_barrier((char*)&out);
     if (retstatus) {
         int bufsize, errmask;
         PyObject *errobj;
@@ -993,7 +991,7 @@ static PyObject *
         return Py_NotImplemented;
     }
 
-    PyUFunc_clearfperr();
+    npy_clear_floatstatus_barrier((char*)&out);
 
     /*
      * here we do the actual calculation with arg1 and arg2
@@ -1008,7 +1006,7 @@ static PyObject *
     }
 
     /* Check status flag.  If it is set, then look up what to do */
-    retstatus = PyUFunc_getfperr();
+    retstatus = npy_get_floatstatus_barrier((char*)&out);
     if (retstatus) {
         int bufsize, errmask;
         PyObject *errobj;
@@ -1072,7 +1070,7 @@ static PyObject *
         return Py_NotImplemented;
     }
 
-    PyUFunc_clearfperr();
+    npy_clear_floatstatus_barrier((char*)&out);
 
     /*
      * here we do the actual calculation with arg1 and arg2
@@ -1136,7 +1134,7 @@ static PyObject *
         return Py_NotImplemented;
     }
 
-    PyUFunc_clearfperr();
+    npy_clear_floatstatus_barrier((char*)&out);
 
     /*
      * here we do the actual calculation with arg1 and arg2
@@ -1150,7 +1148,7 @@ static PyObject *
     }
 
     /* Check status flag.  If it is set, then look up what to do */
-    retstatus = PyUFunc_getfperr();
+    retstatus = npy_get_floatstatus_barrier((char*)&out);
     if (retstatus) {
         int bufsize, errmask;
         PyObject *errobj;

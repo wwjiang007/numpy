@@ -1,5 +1,10 @@
 """
-Define a simple format for saving numpy arrays to disk with the full
+Binary serialization
+
+NPY format
+==========
+
+A simple format for saving numpy arrays to disk with the full
 information about them.
 
 The ``.npy`` format is the standard binary file format in NumPy for
@@ -143,8 +148,10 @@ data HEADER_LEN."
 
 Notes
 -----
-The ``.npy`` format, including reasons for creating it and a comparison of
-alternatives, is described fully in the "npy-format" NEP.
+The ``.npy`` format, including motivation for creating it and a comparison of
+alternatives, is described in the `"npy-format" NEP 
+<https://www.numpy.org/neps/nep-0001-npy-format.html>`_, however details have
+evolved with time and this document is more current.
 
 """
 from __future__ import division, absolute_import, print_function
@@ -155,11 +162,8 @@ import io
 import warnings
 from numpy.lib.utils import safe_eval
 from numpy.compat import asbytes, asstr, isfileobj, long, basestring
+from numpy.core.numeric import pickle
 
-if sys.version_info[0] >= 3:
-    import pickle
-else:
-    import cPickle as pickle
 
 MAGIC_PREFIX = b'\x93NUMPY'
 MAGIC_LEN = len(MAGIC_PREFIX) + 2

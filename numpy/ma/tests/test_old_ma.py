@@ -22,6 +22,7 @@ from numpy.ma import (
     repeat, resize, shape, sin, sinh, sometrue, sort, sqrt, subtract, sum,
     take, tan, tanh, transpose, where, zeros,
     )
+from numpy.core.numeric import pickle
 
 pi = np.pi
 
@@ -273,7 +274,11 @@ class TestMa(object):
         assert_(y1.mask is m)
 
         y1a = array(y1, copy=0)
-        assert_(y1a.mask is y1.mask)
+        # For copy=False, one might expect that the array would just
+        # passed on, i.e., that it would be "is" instead of "==".
+        # See gh-4043 for discussion.
+        assert_(y1a._mask.__array_interface__ ==
+                y1._mask.__array_interface__)
 
         y2 = array(x1, mask=m3, copy=0)
         assert_(y2.mask is m3)
@@ -545,13 +550,13 @@ class TestMa(object):
 
     def test_testPickle(self):
         # Test of pickling
-        import pickle
         x = arange(12)
         x[4:10:2] = masked
         x = x.reshape(4, 3)
-        s = pickle.dumps(x)
-        y = pickle.loads(s)
-        assert_(eq(x, y))
+        for proto in range(2, pickle.HIGHEST_PROTOCOL + 1):
+            s = pickle.dumps(x, protocol=proto)
+            y = pickle.loads(s)
+            assert_(eq(x, y))
 
     def test_testMasked(self):
         # Test of masked element
