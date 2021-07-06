@@ -1,5 +1,3 @@
-from __future__ import absolute_import, division, print_function
-
 from .common import Benchmark, get_squares_
 
 import numpy as np
@@ -15,7 +13,7 @@ ufuncs = ['abs', 'absolute', 'add', 'arccos', 'arccosh', 'arcsin', 'arcsinh',
           'isinf', 'isnan', 'isnat', 'lcm', 'ldexp', 'left_shift', 'less',
           'less_equal', 'log', 'log10', 'log1p', 'log2', 'logaddexp',
           'logaddexp2', 'logical_and', 'logical_not', 'logical_or',
-          'logical_xor', 'maximum', 'minimum', 'mod', 'modf', 'multiply',
+          'logical_xor', 'matmul', 'maximum', 'minimum', 'mod', 'modf', 'multiply',
           'negative', 'nextafter', 'not_equal', 'positive', 'power',
           'rad2deg', 'radians', 'reciprocal', 'remainder', 'right_shift',
           'rint', 'sign', 'signbit', 'sin', 'sinh', 'spacing', 'sqrt',
@@ -136,6 +134,23 @@ class CustomScalar(Benchmark):
         (self.d < 1)
 
 
+class CustomScalarFloorDivideInt(Benchmark):
+    params = (np.sctypes['int'] + np.sctypes['uint'], [8, -8, 43, -43])
+    param_names = ['dtype', 'divisors']
+
+    def setup(self, dtype, divisor):
+        if dtype in np.sctypes['uint'] and divisor < 0:
+            raise NotImplementedError(
+                    "Skipping test for negative divisor with unsigned type")
+
+        iinfo = np.iinfo(dtype)
+        self.x = np.random.randint(
+                    iinfo.min, iinfo.max, size=10000, dtype=dtype)
+
+    def time_floor_divide_int(self, dtype, divisor):
+        self.x // divisor
+
+
 class Scalar(Benchmark):
     def setup(self):
         self.x = np.asarray(1.0)
@@ -152,7 +167,7 @@ class Scalar(Benchmark):
         (self.y + self.z)
 
 
-class ArgPack(object):
+class ArgPack:
     __slots__ = ['args', 'kwargs']
     def __init__(self, *args, **kwargs):
         self.args = args

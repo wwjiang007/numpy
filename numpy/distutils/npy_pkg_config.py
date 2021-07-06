@@ -1,13 +1,8 @@
-from __future__ import division, absolute_import, print_function
-
 import sys
 import re
 import os
 
-if sys.version_info[0] < 3:
-    from ConfigParser import RawConfigParser
-else:
-    from configparser import RawConfigParser
+from configparser import RawConfigParser
 
 __all__ = ['FormatError', 'PkgNotFound', 'LibraryInfo', 'VariableSet',
         'read_config', 'parse_flags']
@@ -78,7 +73,7 @@ def parse_flags(line):
 def _escape_backslash(val):
     return val.replace('\\', '\\\\')
 
-class LibraryInfo(object):
+class LibraryInfo:
     """
     Object containing build information about a library.
 
@@ -150,7 +145,7 @@ class LibraryInfo(object):
 
         return "\n".join(m)
 
-class VariableSet(object):
+class VariableSet:
     """
     Container object for the variables defined in a config file.
 
@@ -222,9 +217,7 @@ def parse_meta(config):
     if not config.has_section('meta'):
         raise FormatError("No meta section found !")
 
-    d = {}
-    for name, value in config.items('meta'):
-        d[name] = value
+    d = dict(config.items('meta'))
 
     for k in ['name', 'description', 'version']:
         if not k in d:
@@ -382,7 +375,6 @@ def read_config(pkgname, dirs=None):
 # pkg-config simple emulator - useful for debugging, and maybe later to query
 # the system
 if __name__ == '__main__':
-    import sys
     from optparse import OptionParser
     import glob
 
@@ -428,7 +420,7 @@ if __name__ == '__main__':
     if options.define_variable:
         m = re.search(r'([\S]+)=([\S]+)', options.define_variable)
         if not m:
-            raise ValueError("--define-variable option should be of " \
+            raise ValueError("--define-variable option should be of "
                              "the form --define-variable=foo=bar")
         else:
             name = m.group(1)

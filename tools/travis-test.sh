@@ -25,37 +25,49 @@ if [ -n "$PYTHON_OPTS" ]; then
 fi
 
 # make some warnings fatal, mostly to match windows compilers
-werrors="-Werror=declaration-after-statement -Werror=vla "
-werrors+="-Werror=nonnull -Werror=pointer-arith"
+werrors="-Werror=vla -Werror=nonnull -Werror=pointer-arith"
+werrors="$werrors -Werror=implicit-function-declaration"
 
 # build with c99 by default
 
 setup_base()
 {
-  # use default python flags but remoge sign-compare
+  # use default python flags but remove sign-compare
   sysflags="$($PYTHON -c "from distutils import sysconfig; \
     print (sysconfig.get_config_var('CFLAGS'))")"
   export CFLAGS="$sysflags $werrors -Wlogical-op -Wno-sign-compare"
-  # use c99
-  export CFLAGS=$CFLAGS" -std=c99"
+  # SIMD extensions that need to be tested on both runtime and compile-time via (test_simd.py)
+  # any specified features will be ignored if they're not supported by compiler or platform
+  # note: it almost the same default value of --simd-test execpt adding policy `$werror` to treat all
+  # warnings as errors
+  simd_test="\$werror BASELINE SSE2 SSE42 XOP FMA4 (FMA3 AVX2) AVX512F AVX512_SKX VSX VSX2 VSX3 NEON ASIMD"
   # We used to use 'setup.py install' here, but that has the terrible
   # behaviour that if a copy of the package is already installed in the
   # install location, then the new copy just gets dropped on top of it.
   # Travis typically has a stable numpy release pre-installed, and if we
   # don't remove it, then we can accidentally end up e.g. running old
   # test modules that were in the stable release but have been removed
-  # from master. (See gh-2765, gh-2768.)  Using 'pip install' also has
+  # from main. (See gh-2765, gh-2768.)  Using 'pip install' also has
   # the advantage that it tests that numpy is 'pip install' compatible,
   # see e.g. gh-2766...
   if [ -z "$USE_DEBUG" ]; then
-    $PIP install -v . 2>&1 | tee log
+    # activates '-Werror=undef' when DEBUG isn't enabled since _cffi_backend'
+    # extension breaks the build due to the following error:
+    #
+    # error: "HAVE_FFI_PREP_CIF_VAR" is not defined, evaluates to 0 [-Werror=undef]
+    # #if !HAVE_FFI_PREP_CIF_VAR && defined(__arm64__) && defined(__APPLE__)
+    #
+    export CFLAGS="$CFLAGS -Werror=undef"
+    $PYTHON setup.py build --simd-test "$simd_test" install 2>&1 | tee log
   else
-    # Python3.5-dbg on travis seems to need this
+    # The job run with USE_DEBUG=1 on travis needs this.
     export CFLAGS=$CFLAGS" -Wno-maybe-uninitialized"
-    $PYTHON setup.py build_ext --inplace 2>&1 | tee log
+    $PYTHON setup.py build --simd-test "$simd_test" build_src --verbose-cfg build_ext --inplace 2>&1 | tee log
   fi
   grep -v "_configtest" log \
-    | grep -vE "ld returned 1|no previously-included files matching|manifest_maker: standard file '-c'" \
+    | grep -vE "ld returned 1|no files found matching" \
+    | grep -vE "no previously-included files matching" \
+    | grep -vE "manifest_maker: standard file '-c'" \
     | grep -E "warning\>" \
     | tee warnings
   if [ "$LAPACK" != "None" ]; then
@@ -63,56 +75,23 @@ setup_base()
   fi
 }
 
-setup_chroot()
-{
-  # this can all be replaced with:
-  # apt-get install libpython2.7-dev:i386
-  # CC="gcc -m32" LDSHARED="gcc -m32 -shared" LDFLAGS="-m32 -shared" \
-  #   linux32 python setup.py build
-  # when travis updates to ubuntu 14.04
-  #
-  # NumPy may not distinguish between 64 and 32 bit ATLAS in the
-  # configuration stage.
-  DIR=$1
-  set -u
-  sudo debootstrap --variant=buildd --include=fakeroot,build-essential \
-    --arch=$ARCH --foreign $DIST $DIR
-  sudo chroot $DIR ./debootstrap/debootstrap --second-stage
-
-  # put the numpy repo in the chroot directory
-  sudo rsync -a $TRAVIS_BUILD_DIR $DIR/
-
-  # set up repos in the chroot directory for installing packages
-  echo deb http://archive.ubuntu.com/ubuntu/ \
-    $DIST main restricted universe multiverse \
-    | sudo tee -a $DIR/etc/apt/sources.list
-  echo deb http://archive.ubuntu.com/ubuntu/ \
-    $DIST-updates main restricted universe multiverse \
-    | sudo tee -a $DIR/etc/apt/sources.list
-  echo deb http://security.ubuntu.com/ubuntu \
-    $DIST-security  main restricted universe multiverse \
-    | sudo tee -a $DIR/etc/apt/sources.list
-
-  sudo chroot $DIR bash -c "apt-get update"
-  # faster operation with preloaded eatmydata
-  sudo chroot $DIR bash -c "apt-get install -qq -y eatmydata"
-  echo '/usr/$LIB/libeatmydata.so' | \
-    sudo tee -a $DIR/etc/ld.so.preload
-
-  # install needed packages
-  sudo chroot $DIR bash -c "apt-get install -qq -y \
-    libatlas-base-dev gfortran python-dev python-nose python-pip cython \
-    python-pytest"
-}
-
 run_test()
 {
+  # Install the test dependencies.
+  # Clear PYTHONOPTIMIZE when running `pip install -r test_requirements.txt`
+  # because version 2.19 of pycparser (a dependency of one of the packages
+  # in test_requirements.txt) does not provide a wheel, and the source tar
+  # file does not install correctly when Python's optimization level is set
+  # to strip docstrings (see https://github.com/eliben/pycparser/issues/291).
+  PYTHONOPTIMIZE="" $PIP install -r test_requirements.txt
+  DURATIONS_FLAG="--durations 10"
+
   if [ -n "$USE_DEBUG" ]; then
     export PYTHONPATH=$PWD
+    export MYPYPATH=$PWD
   fi
 
   if [ -n "$RUN_COVERAGE" ]; then
-    pip install pytest-cov
     COVERAGE_FLAG=--coverage
   fi
 
@@ -123,11 +102,16 @@ run_test()
   INSTALLDIR=$($PYTHON -c \
     "import os; import numpy; print(os.path.dirname(numpy.__file__))")
   export PYTHONWARNINGS=default
+
+  if [ -n "$CHECK_BLAS" ]; then
+    $PYTHON ../tools/openblas_support.py --check_version
+  fi
+
   if [ -n "$RUN_FULL_TESTS" ]; then
     export PYTHONWARNINGS="ignore::DeprecationWarning:virtualenv"
-    $PYTHON ../tools/test-installed-numpy.py -v --mode=full $COVERAGE_FLAG
+    $PYTHON -b ../runtests.py -n -v --mode=full $DURATIONS_FLAG $COVERAGE_FLAG
   else
-    $PYTHON ../tools/test-installed-numpy.py -v
+    $PYTHON ../runtests.py -n -v $DURATIONS_FLAG -- -rs
   fi
 
   if [ -n "$RUN_COVERAGE" ]; then
@@ -153,6 +137,7 @@ run_test()
 
   if [ -n "$USE_ASV" ]; then
     pushd ../benchmarks
+    $PYTHON `which asv` check --python=same
     $PYTHON `which asv` machine --machine travis
     $PYTHON `which asv` dev 2>&1| tee asv-output.log
     if grep -q Traceback asv-output.log; then
@@ -163,20 +148,13 @@ run_test()
   fi
 }
 
+
 export PYTHON
 export PIP
-$PIP install setuptools
 
 if [ -n "$USE_WHEEL" ] && [ $# -eq 0 ]; then
-  # Build wheel
-  $PIP install wheel
-  # ensure that the pip / setuptools versions deployed inside
-  # the venv are recent enough
-  $PIP install -U virtualenv
   # ensure some warnings are not issued
   export CFLAGS=$CFLAGS" -Wno-sign-compare -Wno-unused-result"
-  # use c99
-  export CFLAGS=$CFLAGS" -std=c99"
   # adjust gcc flags if C coverage requested
   if [ -n "$RUN_COVERAGE" ]; then
      export NPY_DISTUTILS_APPEND_FLAGS=1
@@ -185,53 +163,31 @@ if [ -n "$USE_WHEEL" ] && [ $# -eq 0 ]; then
      export F90='gfortran --coverage'
      export LDFLAGS='--coverage'
   fi
-  $PYTHON setup.py bdist_wheel
+  $PYTHON setup.py build --warn-error build_src --verbose-cfg bdist_wheel
   # Make another virtualenv to install into
   virtualenv --python=`which $PYTHON` venv-for-wheel
   . venv-for-wheel/bin/activate
   # Move out of source directory to avoid finding local numpy
   pushd dist
-  pip install --pre --no-index --upgrade --find-links=. numpy
-  pip install nose pytest
-
-  if [ -n "$INSTALL_PICKLE5" ]; then
-    pip install pickle5
-  fi
-
+  $PIP install --pre --no-index --upgrade --find-links=. numpy
   popd
+
   run_test
+
 elif [ -n "$USE_SDIST" ] && [ $# -eq 0 ]; then
-  # use an up-to-date pip / setuptools inside the venv
-  $PIP install -U virtualenv
   # temporary workaround for sdist failures.
   $PYTHON -c "import fcntl; fcntl.fcntl(1, fcntl.F_SETFL, 0)"
   # ensure some warnings are not issued
   export CFLAGS=$CFLAGS" -Wno-sign-compare -Wno-unused-result"
-  # use c99
-  export CFLAGS=$CFLAGS" -std=c99"
   $PYTHON setup.py sdist
   # Make another virtualenv to install into
   virtualenv --python=`which $PYTHON` venv-for-wheel
   . venv-for-wheel/bin/activate
   # Move out of source directory to avoid finding local numpy
   pushd dist
-  pip install numpy*
-  pip install nose pytest
-  if [ -n "$INSTALL_PICKLE5" ]; then
-    pip install pickle5
-  fi
-
+  $PIP install numpy*
   popd
   run_test
-elif [ -n "$USE_CHROOT" ] && [ $# -eq 0 ]; then
-  DIR=/chroot
-  setup_chroot $DIR
-  # the chroot'ed environment will not have the current locale,
-  # avoid any warnings which may disturb testing
-  export LANG=C LC_ALL=C
-  # run again in chroot with this time testing
-  sudo linux32 chroot $DIR bash -c \
-    "cd numpy && PYTHON=python PIP=pip IN_CHROOT=1 $0 test"
 else
   setup_base
   run_test

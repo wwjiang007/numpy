@@ -1,4 +1,4 @@
-.. _numpy-testing:
+.. module:: numpy.testing
 
 Test Support (:mod:`numpy.testing`)
 ===================================
@@ -18,9 +18,6 @@ Asserts
 .. autosummary::
    :toctree: generated/
 
-   assert_almost_equal
-   assert_approx_equal
-   assert_array_almost_equal
    assert_allclose
    assert_array_almost_equal_nulp
    assert_array_max_ulp
@@ -32,16 +29,29 @@ Asserts
    assert_warns
    assert_string_equal
 
+Asserts (not recommended)
+-------------------------
+It is recommended to use one of `assert_allclose`,
+`assert_array_almost_equal_nulp` or `assert_array_max_ulp` instead of these
+functions for more consistent floating point comparisons.
+
+.. autosummary::
+   :toctree: generated/
+
+   assert_almost_equal
+   assert_approx_equal
+   assert_array_almost_equal
+
 Decorators
 ----------
 .. autosummary::
    :toctree: generated/
 
-   decorators.deprecated
-   decorators.knownfailureif
-   decorators.setastest
-   decorators.skipif
-   decorators.slow
+   dec.deprecated
+   dec.knownfailureif
+   dec.setastest
+   dec.skipif
+   dec.slow
    decorate_methods
 
 Test Running

@@ -1,13 +1,17 @@
-from __future__ import division, absolute_import, print_function
-
 import numpy as np
 from numpy.testing import (
     assert_, assert_equal, assert_array_equal, assert_almost_equal,
-    assert_array_almost_equal, assert_raises
+    assert_array_almost_equal, assert_raises, assert_allclose
     )
 
+import pytest
 
-class TestPolynomial(object):
+# `poly1d` has some support for `bool_` and `timedelta64`,
+# but it is limited and they are therefore excluded here
+TYPE_CODES = np.typecodes["AllInteger"] + np.typecodes["AllFloat"] + "O"
+
+
+class TestPolynomial:
     def test_poly1d_str_and_repr(self):
         p = np.poly1d([1., 2, 3])
         assert_equal(repr(p), 'poly1d([1., 2., 3.])')
@@ -59,11 +63,26 @@ class TestPolynomial(object):
         assert_equal(np.polydiv(np.poly1d([1, 0, -1]), np.poly1d([1, 1])),
                      (np.poly1d([1., -1.]), np.poly1d([0.])))
 
-    def test_poly1d_misc(self):
-        p = np.poly1d([1., 2, 3])
-        assert_equal(np.asarray(p), np.array([1., 2., 3.]))
+    @pytest.mark.parametrize("type_code", TYPE_CODES)
+    def test_poly1d_misc(self, type_code: str) -> None:
+        dtype = np.dtype(type_code)
+        ar = np.array([1, 2, 3], dtype=dtype)
+        p = np.poly1d(ar)
+
+        # `__eq__`
+        assert_equal(np.asarray(p), ar)
+        assert_equal(np.asarray(p).dtype, dtype)
         assert_equal(len(p), 2)
-        assert_equal((p[0], p[1], p[2], p[3]), (3.0, 2.0, 1.0, 0))
+
+        # `__getitem__`
+        comparison_dct = {-1: 0, 0: 3, 1: 2, 2: 1, 3: 0}
+        for index, ref in comparison_dct.items():
+            scalar = p[index]
+            assert_equal(scalar, ref)
+            if dtype == np.object_:
+                assert isinstance(scalar, int)
+            else:
+                assert_equal(scalar.dtype, dtype)
 
     def test_poly1d_variable_arg(self):
         q = np.poly1d([1., 2, 3], variable='y')
@@ -122,26 +141,33 @@ class TestPolynomial(object):
         weights = np.arange(8, 1, -1)**2/7.0
 
         # Check exception when too few points for variance estimate. Note that
-        # the Bayesian estimate requires the number of data points to exceed
-        # degree + 3.
+        # the estimate requires the number of data points to exceed
+        # degree + 1
         assert_raises(ValueError, np.polyfit,
-                      [0, 1, 3], [0, 1, 3], deg=0, cov=True)
+                      [1], [1], deg=0, cov=True)
 
         # check 1D case
         m, cov = np.polyfit(x, y+err, 2, cov=True)
         est = [3.8571, 0.2857, 1.619]
         assert_almost_equal(est, m, decimal=4)
-        val0 = [[2.9388, -5.8776, 1.6327],
-                [-5.8776, 12.7347, -4.2449],
-                [1.6327, -4.2449, 2.3220]]
+        val0 = [[ 1.4694, -2.9388,  0.8163],
+                [-2.9388,  6.3673, -2.1224],
+                [ 0.8163, -2.1224,  1.161 ]]
         assert_almost_equal(val0, cov, decimal=4)
 
         m2, cov2 = np.polyfit(x, y+err, 2, w=weights, cov=True)
         assert_almost_equal([4.8927, -1.0177, 1.7768], m2, decimal=4)
-        val = [[8.7929, -10.0103, 0.9756],
-               [-10.0103, 13.6134, -1.8178],
-               [0.9756, -1.8178, 0.6674]]
+        val = [[ 4.3964, -5.0052,  0.4878],
+               [-5.0052,  6.8067, -0.9089],
+               [ 0.4878, -0.9089,  0.3337]]
         assert_almost_equal(val, cov2, decimal=4)
+
+        m3, cov3 = np.polyfit(x, y+err, 2, w=weights, cov="unscaled")
+        assert_almost_equal([4.8927, -1.0177, 1.7768], m3, decimal=4)
+        val = [[ 0.1473, -0.1677,  0.0163],
+               [-0.1677,  0.228 , -0.0304],
+               [ 0.0163, -0.0304,  0.0112]]
+        assert_almost_equal(val, cov3, decimal=4)
 
         # check 2D (n,1) case
         y = y[:, np.newaxis]
@@ -157,6 +183,29 @@ class TestPolynomial(object):
         assert_almost_equal(est, m[:, 1], decimal=4)
         assert_almost_equal(val0, cov[:, :, 0], decimal=4)
         assert_almost_equal(val0, cov[:, :, 1], decimal=4)
+
+        # check order 1 (deg=0) case, were the analytic results are simple
+        np.random.seed(123)
+        y = np.random.normal(size=(4, 10000))
+        mean, cov = np.polyfit(np.zeros(y.shape[0]), y, deg=0, cov=True)
+        # Should get sigma_mean = sigma/sqrt(N) = 1./sqrt(4) = 0.5.
+        assert_allclose(mean.std(), 0.5, atol=0.01)
+        assert_allclose(np.sqrt(cov.mean()), 0.5, atol=0.01)
+        # Without scaling, since reduced chi2 is 1, the result should be the same.
+        mean, cov = np.polyfit(np.zeros(y.shape[0]), y, w=np.ones(y.shape[0]),
+                               deg=0, cov="unscaled")
+        assert_allclose(mean.std(), 0.5, atol=0.01)
+        assert_almost_equal(np.sqrt(cov.mean()), 0.5)
+        # If we estimate our errors wrong, no change with scaling:
+        w = np.full(y.shape[0], 1./0.5)
+        mean, cov = np.polyfit(np.zeros(y.shape[0]), y, w=w, deg=0, cov=True)
+        assert_allclose(mean.std(), 0.5, atol=0.01)
+        assert_allclose(np.sqrt(cov.mean()), 0.5, atol=0.01)
+        # But if we do not scale, our estimate for the error in the mean will
+        # differ.
+        mean, cov = np.polyfit(np.zeros(y.shape[0]), y, w=w, deg=0, cov="unscaled")
+        assert_allclose(mean.std(), 0.5, atol=0.01)
+        assert_almost_equal(np.sqrt(cov.mean()), 0.25)
 
     def test_objects(self):
         from decimal import Decimal
@@ -199,6 +248,20 @@ class TestPolynomial(object):
         v = np.arange(1, 21)
         assert_almost_equal(np.poly(v), np.poly(np.diag(v)))
 
+    def test_zero_poly_dtype(self):
+        """
+        Regression test for gh-16354.
+        """
+        z = np.array([0, 0, 0])
+        p = np.poly1d(z.astype(np.int64))
+        assert_equal(p.coeffs.dtype, np.int64)
+
+        p = np.poly1d(z.astype(np.float32))
+        assert_equal(p.coeffs.dtype, np.float32)
+
+        p = np.poly1d(z.astype(np.complex64))
+        assert_equal(p.coeffs.dtype, np.complex64)
+
     def test_poly_eq(self):
         p = np.poly1d([1, 2, 3])
         p2 = np.poly1d([1, 2, 4])
@@ -216,16 +279,25 @@ class TestPolynomial(object):
         assert_equal(r.coeffs.dtype, np.complex128)
         assert_equal(q*a + r, b)
 
-    def test_poly_coeffs_immutable(self):
-        """ Coefficients should not be modifiable """
+        c = [1, 2, 3]
+        d = np.poly1d([1, 2, 3])
+        s, t = np.polydiv(c, d)
+        assert isinstance(s, np.poly1d)
+        assert isinstance(t, np.poly1d)
+        u, v = np.polydiv(d, c)
+        assert isinstance(u, np.poly1d)
+        assert isinstance(v, np.poly1d)
+
+    def test_poly_coeffs_mutable(self):
+        """ Coefficients should be modifiable """
         p = np.poly1d([1, 2, 3])
 
-        try:
-            # despite throwing an exception, this used to change state
-            p.coeffs += 1
-        except Exception:
-            pass
-        assert_equal(p.coeffs, [1, 2, 3])
+        p.coeffs += 1
+        assert_equal(p.coeffs, [2, 3, 4])
 
         p.coeffs[2] += 10
-        assert_equal(p.coeffs, [1, 2, 3])
+        assert_equal(p.coeffs, [2, 3, 14])
+
+        # this never used to be allowed - let's not add features to deprecated
+        # APIs
+        assert_raises(AttributeError, setattr, p, 'coeffs', np.array(1))

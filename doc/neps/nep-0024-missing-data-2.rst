@@ -1,3 +1,5 @@
+.. _NEP24:
+
 =============================================================
 NEP 24 — Missing Data Functionality - Alternative 1 to NEP 12
 =============================================================
@@ -12,7 +14,7 @@ Abstract
 --------
 
 *Context: this NEP was written as an alternative to NEP 12, which at the time of writing
-had an implementation that was merged into the NumPy master branch.*
+had an implementation that was merged into the NumPy main branch.*
 
 The principle of this NEP is to separate the APIs for masking and for missing values, according to
 
@@ -28,7 +30,7 @@ Detailed description
 Rationale
 ^^^^^^^^^
 
-The purpose of this aNEP is to define two interfaces -- one for handling
+The purpose of this NEP is to define two interfaces -- one for handling
 'missing values', and one for handling 'masked arrays'.
 
 An ordinary value is something like an integer or a floating point number. A
